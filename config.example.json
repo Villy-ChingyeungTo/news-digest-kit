@@ -1,0 +1,75 @@
+{
+  "recipient": "",
+  "sender": "",
+  "smtp_host": "smtp.gmail.com",
+  "smtp_port": 465,
+  "times": [
+    "09:00",
+    "12:00",
+    "17:00"
+  ],
+  "enabled": false,
+  "activated_at": null,
+  "sources": [
+    {
+      "name": "Bloomberg.com",
+      "url": "https://www.bloomberg.com/feeds/news.rss"
+    },
+    {
+      "name": "Bloomberg Markets",
+      "url": "https://www.bloomberg.com/feeds/markets/news.rss"
+    },
+    {
+      "name": "Bloomberg Economics",
+      "url": "https://www.bloomberg.com/feeds/economics/news.rss"
+    },
+    {
+      "name": "Bloomberg Technology",
+      "url": "https://www.bloomberg.com/feeds/technology/news.rss"
+    },
+    {
+      "name": "Bloomberg Politics",
+      "url": "https://www.bloomberg.com/feeds/politics/news.rss"
+    },
+    {
+      "name": "Bloomberg Industries",
+      "url": "https://www.bloomberg.com/feeds/industries/news.rss"
+    },
+    {
+      "name": "Bloomberg Businessweek",
+      "url": "https://www.bloomberg.com/feeds/businessweek/news.rss"
+    },
+    {
+      "name": "Bloomberg Wealth",
+      "url": "https://www.bloomberg.com/feeds/wealth/news.rss"
+    },
+    {
+      "name": "Bloomberg Crypto",
+      "url": "https://www.bloomberg.com/feeds/crypto/news.rss"
+    },
+    {
+      "name": "Bloomberg Green",
+      "url": "https://www.bloomberg.com/feeds/green/news.rss"
+    },
+    {
+      "name": "Bloomberg Opinion",
+      "url": "https://www.bloomberg.com/feeds/opinion/news.rss"
+    },
+    {
+      "name": "Bloomberg Pursuits",
+      "url": "https://www.bloomberg.com/feeds/pursuits/news.rss"
+    },
+    {
+      "name": "Bloomberg AI",
+      "url": "https://www.bloomberg.com/feeds/ai/news.rss"
+    },
+    {
+      "name": "Bloomberg CityLab",
+      "url": "https://www.bloomberg.com/feeds/citylab/news.rss"
+    }
+  ],
+  "language": "en",
+  "sections": [],
+  "smtp_proxy": null,
+  "rss_proxy": null
+}

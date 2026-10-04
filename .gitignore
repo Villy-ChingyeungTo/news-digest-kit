@@ -1,0 +1,10 @@
+config.json
+private/
+preview.html
+__pycache__/
+*.py[cod]
+*.zip
+.env*
+*.pem
+*.key
+dist/
