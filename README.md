@@ -4,6 +4,33 @@ A Windows tool that collects Bloomberg RSS headlines and emails a readable diges
 
 **Coverage is limited to available public RSS feeds. This is not a complete Bloomberg news feed, an official Bloomberg product, or a paywall bypass.** Source sections are the original RSS channel names, not guaranteed article-page taxonomy. Titles and source section names stay in their original language.
 
+## Portfolio showcase · October 25 recovery update
+
+[中文作品说明](PORTFOLIO.zh-CN.md) · [Download the offline demo](sample-preview.html) · [Demo generator](demo.py)
+
+![The Brief fictional demonstration](demo-preview.png)
+
+Download `sample-preview.html` and open it in a browser to switch between English, 简体中文 and 繁體中文, and filter source sections. This is a **fictional offline demonstration**, with no account configuration or mail sending. Rebuild it with `python demo.py`.
+
+This AI-assisted development project demonstrates the **data collection and delivery layer** of a research workflow. The runtime does not call an LLM, generate investment recommendations, backtest strategies or execute trades.
+
+```mermaid
+flowchart LR
+    RSS[Public RSS feeds] --> Fetch[Concurrent collection]
+    Fetch --> DB[URL normalization and SQLite deduplication]
+    DB --> Reader[HTML digest and offline reader]
+    Reader --> Prepare[preparing]
+    Prepare --> Sending[sending]
+    Sending --> Sent[SMTP acceptance: sent]
+    Sending --> Reconcile[Uncertain state: Message-ID reconciliation]
+```
+
+The October 25 recovery changes add interrupted-preparation recovery, persistence immediately after SMTP acceptance, Gmail Sent-folder reconciliation after a 15-minute grace period, idle-sleep inhibition during execution, and ZIP compression for large HTML attachments. Existing public-release setup helpers, account validation and RSS proxy support are retained.
+
+Gmail reconciliation relies on Sent-folder availability and Message-ID search. A missing match permits retry; this is not proof of non-delivery or an exactly-once guarantee. Other providers require manual reconciliation. Idle-sleep inhibition does not prevent shutdown or explicit sleep.
+
+Local verification for this publication: **23 Python tests passed**, using synthetic inputs and mocked mail. No production email was sent for publication testing.
+
 ## What you get
 
 - Original headline, original source section and original article link.

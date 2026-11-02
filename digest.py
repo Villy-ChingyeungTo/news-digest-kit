@@ -1,4 +1,8 @@
 """Windows RSS digest. Python 3.10+, standard library only."""
+import ctypes
+import imaplib
+import io
+import zipfile
 import argparse
 import sys
 import os
@@ -138,7 +142,7 @@ class ProxySMTPSSL(smtplib.SMTP_SSL):
 def smtp_connection(cfg):
     smtp_class = ProxySMTPSSL if cfg.get('smtp_proxy') else smtplib.SMTP_SSL
     options = {'proxy':cfg['smtp_proxy']} if cfg.get('smtp_proxy') else {}
-    return smtp_class(cfg['smtp_host'],cfg['smtp_port'],context=ssl.create_default_context(),timeout=20,**options)
+    return smtp_class(cfg['smtp_host'],cfg['smtp_port'],context=ssl.create_default_context(),timeout=45,**options)
 
 def prepare_message(cfg, subject, content, message_id, attachment=None):
     msg = EmailMessage()
@@ -147,14 +151,21 @@ def prepare_message(cfg, subject, content, message_id, attachment=None):
     msg.set_content(words(cfg.get('language','en'))['plain'])
     msg.add_alternative(content,subtype='html')
     if attachment:
-        msg.add_attachment(attachment.encode('utf-8'),maintype='text',subtype='html',filename='full-digest.html')
+        payload=attachment.encode('utf-8')
+        if len(payload)>2_000_000:
+            buffer=io.BytesIO()
+            with zipfile.ZipFile(buffer,'w',zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr('full-digest.html',payload)
+            msg.add_attachment(buffer.getvalue(),maintype='application',subtype='zip',filename='full-digest.zip')
+        else:
+            msg.add_attachment(payload,maintype='text',subtype='html',filename='full-digest.html')
     # Catch encoding defects locally, before authentication or transmission.
     msg.as_bytes(policy=SMTP)
     return msg
 
 class BeforeSendError(RuntimeError): pass
 
-def mail(cfg, subject, content, message_id, attachment=None):
+def mail(cfg, subject, content, message_id, attachment=None, before_send=None, accepted=None):
     try:
         cred = credential()
         if cred['user'].strip().lower()!=cfg['sender'].strip().lower():
@@ -167,7 +178,9 @@ def mail(cfg, subject, content, message_id, attachment=None):
             s.login(cred['user'],cred['password'])
         except Exception as e: raise BeforeSendError(friendly_error(e)) from e
         # Failures from this point can be ambiguous and must not auto-retry.
+        if before_send: before_send()
         s.send_message(msg)
+        if accepted: accepted()
     finally:
         # A failed QUIT after accepted DATA must not mark a successful send uncertain.
         s.close()
@@ -194,17 +207,52 @@ def due_slot(clock, times):
             if x<=clock: candidates.append(x)
     return max(candidates)
 
+def reconcile_gmail(c, cfg, clock):
+    pending=list(c.execute("SELECT * FROM batches WHERE status='sending'"))
+    if not pending or cfg.get('smtp_host') != 'smtp.gmail.com': return
+    pending=[r for r in pending if clock-dt.datetime.fromisoformat(r['created']) > dt.timedelta(minutes=15)]
+    if not pending: return
+    class GmailIMAP(imaplib.IMAP4_SSL):
+        def _create_socket(self, timeout):
+            if not cfg.get('smtp_proxy'): return super()._create_socket(timeout)
+            tunnel=object.__new__(ProxySMTPSSL)
+            tunnel.proxy=cfg['smtp_proxy']; tunnel.context=ssl.create_default_context()
+            return tunnel._get_socket(self.host,self.port,timeout)
+    # Reconcile against the sender's Sent folder, never infer success from a timeout.
+    cred=credential()
+    with GmailIMAP('imap.gmail.com',993,timeout=25) as client:
+        client.login(cred['user'],cred['password'])
+        status, boxes=client.list()
+        if status != 'OK': raise RuntimeError('Unable to list Gmail folders')
+        sent=next((b for b in boxes if b and b'\\Sent' in b),None)
+        if sent is None: raise RuntimeError('Gmail Sent folder unavailable; preserve uncertain batch')
+        folder=sent.split(b' "/" ',1)[1].decode('ascii')
+        if client.select(folder,readonly=True)[0] != 'OK': raise RuntimeError('Cannot read Gmail Sent folder')
+        for row in pending:
+            status, ids=client.uid('search',None,'HEADER','Message-ID','"'+row['message_id']+'"')
+            if status != 'OK' or not ids or ids[0] is None: raise RuntimeError('Gmail reconciliation search failed')
+            with c:
+                if ids[0].strip():
+                    for url in json.loads(row['urls']): c.execute('UPDATE articles SET sent=? WHERE url=?',(stamp(clock),url))
+                    c.execute("UPDATE batches SET status='sent' WHERE id=?",(row['id'],))
+                    logging.info('Reconciled %s: found in Gmail Sent',row['id'])
+                else:
+                    c.execute("DELETE FROM batches WHERE id=? AND status='sending'",(row['id'],))
+                    logging.info('Reconciled %s: absent from Gmail Sent after grace period; retry allowed',row['id'])
+
 def deliver(c,cfg,clock,floor):
     slot=due_slot(clock,cfg['times'])
     if slot < dt.datetime.fromisoformat(cfg['activated_at']): return
     batch_id=stamp(slot)
+    # Only a prepared message is safe to retry after process interruption.
+    with c: c.execute("DELETE FROM batches WHERE status='preparing'")
     if c.execute('SELECT 1 FROM batches WHERE id=?',(batch_id,)).fetchone(): return
     # SMTP acknowledgement can be ambiguous: stop rather than automatically duplicate mail.
     if c.execute("SELECT 1 FROM batches WHERE status='sending'").fetchone():
         raise RuntimeError('Uncertain prior send. Inspect Sent mail and use resolve; automatic send paused.')
     sources=[dict(x) for x in c.execute('SELECT * FROM sources ORDER BY name')]
     relevant=[s for s in sources if not cfg.get('sections') or s['name'] in cfg['sections']]
-    if not any(s['status']=='ok' for s in relevant): raise RuntimeError('No selected nonempty healthy feed; skip sending and retry next tick')
+    if not any(s['status']=='ok' for s in relevant): raise RuntimeError('No nonempty healthy feed; skip sending and retry next tick')
     articles=filter_sections(select_articles(c,clock,floor),cfg.get('sections',[]))
     language=cfg.get('language','en')
     t=words(language)
@@ -222,21 +270,39 @@ def deliver(c,cfg,clock,floor):
     (out/(slot.strftime('%Y%m%d-%H%M')+'.html')).write_text(full,encoding='utf-8')
     mid=make_msgid(domain='news-digest.local')
     interactive=browser_preview(articles,sources,clock,times=cfg['times'],preview=False)
-    c.execute('INSERT INTO batches VALUES(?,?,?,?,?)',(batch_id,'sending',json.dumps([a['url'] for a in articles]),mid,stamp(clock)));c.commit()
+    c.execute('INSERT INTO batches VALUES(?,?,?,?,?)',(batch_id,'preparing',json.dumps([a['url'] for a in articles]),mid,stamp(clock)));c.commit()
+    def before_send():
+        with c: c.execute("UPDATE batches SET status='sending' WHERE id=?",(batch_id,))
+    def accepted():
+        with c:
+            for a in articles: c.execute('UPDATE articles SET sent=? WHERE url=?',(stamp(now()),a['url']))
+            c.execute("UPDATE batches SET status='sent' WHERE id=?",(batch_id,))
+        logging.info('SMTP accepted batch %s (%d stories)',batch_id,len(articles))
     try:
-        mail(cfg,f'The Brief | {slot:%m/%d %H:%M} | {len(articles)} {t["new"]}',short,mid,interactive)
-    except BeforeSendError:
-        c.execute('DELETE FROM batches WHERE id=?',(batch_id,));c.commit()
+        mail(cfg,f'The Brief | {slot:%m/%d %H:%M} | {len(articles)} {t["new"]}',short,mid,interactive,before_send=before_send,accepted=accepted)
+    except Exception:
+        # Connection/login/rendering failures have not transmitted any message.
+        with c: c.execute("DELETE FROM batches WHERE id=? AND status='preparing'",(batch_id,))
         raise
-    with c:
-        for a in articles: c.execute('UPDATE articles SET sent=? WHERE url=?',(stamp(clock),a['url']))
-        c.execute("UPDATE batches SET status='sent' WHERE id=?",(batch_id,))
+
+@contextlib.contextmanager
+def keep_awake():
+    # Prevent idle sleep during this short job, without keeping the display on.
+    # Explicit sleep/shutdown remains possible; uncertain DATA sends stay guarded.
+    kernel = ctypes.windll.kernel32
+    previous = kernel.SetThreadExecutionState(0x80000001)
+    if not previous: logging.warning('Could not inhibit idle sleep')
+    try: yield
+    finally:
+        if previous: kernel.SetThreadExecutionState(previous)
 
 @contextlib.contextmanager
 def locked(path):
     import msvcrt
     with open(path,'a+b') as f:
-        f.seek(0);f.write(b'0');f.flush();f.seek(0)
+        f.seek(0,2)
+        if f.tell()==0: f.write(b'0');f.flush()
+        f.seek(0)
         try: msvcrt.locking(f.fileno(),msvcrt.LK_NBLCK,1)
         except OSError: raise RuntimeError('Another digest process is running')
         try: yield
@@ -256,7 +322,7 @@ def main():
             print('SMTP TLS connection verified. No login attempted, no email sent.')
         return
     clock=now()
-    with locked(private/'run.lock'):
+    with locked(private/'run.lock'), keep_awake():
         c=connect(private/'state.sqlite3')
         if not c.execute("SELECT 1 FROM meta WHERE key='floor'").fetchone():
             floor=dt.datetime.combine(clock.date()-dt.timedelta(days=1),dt.time(17),TZ)
@@ -267,7 +333,9 @@ def main():
             content=browser_preview(filter_sections(select_articles(c,clock,floor),cfg.get('sections',[])),[dict(s) for s in c.execute('SELECT * FROM sources ORDER BY name')],clock,times=cfg['times'])
             (BASE/'preview.html').write_text(content,encoding='utf-8');print('Preview: '+str(BASE/'preview.html'))
         elif args.command=='tick':
-            if cfg.get('enabled'): deliver(c,cfg,clock,floor)
+            if cfg.get('enabled'):
+                reconcile_gmail(c,cfg,clock)
+                deliver(c,cfg,clock,floor)
         elif args.command=='test-email':
             t=words(cfg.get('language','en'))
             mail(cfg,'The Brief | '+t['test_subject'],'<h1>The Brief.</h1><p>'+esc(t['test_body'])+'</p>',make_msgid(domain='news-digest.local'))

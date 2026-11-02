@@ -4,6 +4,7 @@ import argparse
 import zipfile
 
 FILES = [
+    'demo.py','demo-preview.png','PORTFOLIO.zh-CN.md','tests/test_recovery.py',
     'digest.py','ui.py','config.example.json','README.md','CHANGELOG.md','SKILL.md',
     'sample-preview.html','.gitignore','runtime.ps1','setup.ps1','activate.ps1',
     'install-task.ps1','uninstall-task.ps1','run.ps1','start-setup.cmd',

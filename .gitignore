@@ -1,10 +1,11 @@
-config.json
 private/
+config.json
 preview.html
 __pycache__/
-*.py[cod]
-*.zip
+*.pyc
+*.bak*
+*.sqlite*
+*.log
+smtp.xml
 .env*
-*.pem
-*.key
 dist/

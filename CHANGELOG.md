@@ -1,3 +1,10 @@
+# 2026-11-02 — Portfolio publication of October 25 updates
+
+- Merge recovery state machine, Gmail reconciliation, idle-sleep guard and attachment compression while preserving public installation helpers.
+- Add fictional reproducible offline demo, screenshot and Chinese portfolio brief.
+- Expand source-only packaging and privacy exclusions.
+- 23 local Python tests passed; no production mail sent.
+
 # Changelog
 
 ## 1.1.0

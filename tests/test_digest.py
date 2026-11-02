@@ -31,20 +31,43 @@ class DigestTests(unittest.TestCase):
         self.assertEqual(d.due_slot(self.clock,self.cfg['times']),self.clock)
         self.assertEqual(d.due_slot(self.clock-dt.timedelta(hours=1),self.cfg['times']).hour,17)
     def test_success_then_no_duplicate_at_noon(self):
-        with patch.object(d,'BASE',self.root),patch.object(d,'mail') as mail:
+        with patch.object(d,'BASE',self.root),patch.object(d,'mail',side_effect=lambda *a, **k: k['accepted']()) as mail:
             d.deliver(self.c,self.cfg,self.clock,self.floor)
             d.deliver(self.c,self.cfg,self.clock,self.floor)
             self.assertEqual(mail.call_count,1)
             self.assertEqual(d.select_articles(self.c,self.clock+dt.timedelta(hours=3),self.floor),[])
+    def test_large_attachment_zip_round_trip(self):
+        import io,zipfile
+        cfg={'sender':'sender@example.com','recipient':'recipient@example.com','smtp_host':'smtp.example.com','smtp_port':465}
+        content='full news content '*150000
+        with patch.object(d,'credential',return_value={'user':'sender@example.com','password':'dummy'}),patch.object(d.smtplib,'SMTP_SSL') as smtp:
+            d.mail(cfg,'test','body','<test@example.com>',content)
+            msg=smtp.return_value.send_message.call_args.args[0]
+            attachment=list(msg.iter_attachments())[0]
+            self.assertEqual(attachment.get_filename(),'full-digest.zip')
+            with zipfile.ZipFile(io.BytesIO(attachment.get_payload(decode=True))) as archive:
+                self.assertEqual(archive.read('full-digest.html').decode('utf-8'),content)
+            self.assertEqual(smtp.call_args.kwargs['timeout'],45)
+
+    def test_credential_failure_allows_next_attempt(self):
+        import subprocess
+        with patch.object(d,'BASE',self.root),patch.object(d,'mail',side_effect=subprocess.CalledProcessError(1,'credential')):
+            with self.assertRaises(subprocess.CalledProcessError):
+                d.deliver(self.c,self.cfg,self.clock,self.floor)
+        self.assertEqual(self.c.execute('SELECT count(*) FROM batches').fetchone()[0],0)
+        self.assertIsNone(self.c.execute('SELECT sent FROM articles').fetchone()[0])
+        with patch.object(d,'BASE',self.root),patch.object(d,'mail',side_effect=lambda *a, **k: k['accepted']()) as mail:
+            d.deliver(self.c,self.cfg,self.clock,self.floor)
+            mail.assert_called_once()
+        self.assertEqual(self.c.execute('SELECT status FROM batches').fetchone()[0],'sent')
+
     def test_uncertain_send_pauses_next_slot(self):
-        with patch.object(d,'BASE',self.root),patch.object(d,'mail',side_effect=TimeoutError):
+        def interrupted(*a, **k):
+            k['before_send']()
+            raise TimeoutError()
+        with patch.object(d,'BASE',self.root),patch.object(d,'mail',side_effect=interrupted):
             with self.assertRaises(TimeoutError): d.deliver(self.c,self.cfg,self.clock,self.floor)
             with self.assertRaises(RuntimeError):d.deliver(self.c,self.cfg,self.clock+dt.timedelta(hours=3),self.floor)
-        self.assertIsNone(self.c.execute('SELECT sent FROM articles').fetchone()[0])
-    def test_before_send_failure_is_retriable(self):
-        with patch.object(d,'BASE',self.root),patch.object(d,'mail',side_effect=d.BeforeSendError('network')):
-            with self.assertRaises(d.BeforeSendError):d.deliver(self.c,self.cfg,self.clock,self.floor)
-        self.assertEqual(self.c.execute('SELECT count(*) FROM batches').fetchone()[0],0)
         self.assertIsNone(self.c.execute('SELECT sent FROM articles').fetchone()[0])
     def test_render_escapes_external_content(self):
         a=dict(self.c.execute('SELECT * FROM articles').fetchone())
@@ -96,7 +119,7 @@ class DigestTests(unittest.TestCase):
         self.assertEqual(d.filter_sections([a,b],[]),[a,b])
 
     def test_email_attaches_interactive_html(self):
-        with patch.object(d,'BASE',self.root),patch.object(d,'mail') as mail:
+        with patch.object(d,'BASE',self.root),patch.object(d,'mail',side_effect=lambda *a, **k: k['accepted']()) as mail:
             d.deliver(self.c,self.cfg,self.clock,self.floor)
             args=mail.call_args.args
             self.assertNotIn('<script',args[2])
